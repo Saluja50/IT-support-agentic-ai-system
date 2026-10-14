@@ -15,14 +15,19 @@ _web_search = None
 
 def llm():
     global _llm
+
     if _llm is None:
-        if not settings.openai_api_key:
-            raise RuntimeError("OPENAI_API_KEY is missing")
+        if not settings.openrouter_api_key:
+            raise RuntimeError("OPENROUTER_API_KEY is missing")
+
         _llm = ChatOpenAI(
-            model=settings.openai_model,
+            model=settings.openrouter_model,
             temperature=0,
-            api_key=settings.openai_api_key,
+            api_key=settings.openrouter_api_key,
+            base_url="https://openrouter.ai/api/v1",
+        
         )
+
     return _llm
 
 def web_search_tool():
