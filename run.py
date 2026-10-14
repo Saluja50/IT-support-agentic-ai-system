@@ -9,6 +9,6 @@ docs = load_file(Path("data/sample_kb/service_desk_runbook.md"))
 chunks = chunk_documents(docs)
 
 
-add_documents(chunks)
+add_documents(docs)
 
 
