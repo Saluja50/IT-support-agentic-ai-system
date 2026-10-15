@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     pinecone_namespace: str = "company-it-kb"
     embedding_model: str = "openai/text-embedding-3-small"
     # openai_model: str = "gpt-4o-mini"
-    openrouter_model: str = "nvidia/nemotron-3.5-lightning:free"
+    openrouter_model: str = "openrouter/free"
 
     top_k: int = 4
     max_retries: int = 1
