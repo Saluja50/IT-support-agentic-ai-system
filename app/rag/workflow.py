@@ -14,6 +14,23 @@ settings = get_settings()
 _llm = None
 _web_search = None
 
+# "direct" is the ONLY branch that skips retrieval/grading, so treat it as high-risk.
+# A "direct" route is only trusted above this confidence; below it we fall back to KB.
+ROUTE_CONFIDENCE_FLOOR = 0.75
+
+# Deterministic backstop: if any of these appear, force grounding regardless of the LLM.
+_IT_HINTS = (
+    "vpn", "password", "mfa", "2fa", "otp", "login", "log in", "sign in", "sign-in",
+    "account", "email", "outlook", "laptop", "wifi", "wi-fi", "network", "install",
+    "software", "license", "licence", "access", "reset", "printer", "teams", "slack",
+    "error", "update", "driver", "security", "phishing", "ticket", "device", "setup",
+    "configure", "connect", "policy", "how do i", "how to", "not working", "troubleshoot",
+)
+
+
+def _looks_like_it_question(q: str) -> bool:
+    ql = q.lower()
+    return any(h in ql for h in _IT_HINTS)
 
 
 def llm():
@@ -43,27 +60,56 @@ def web_search_tool():
         )
     return _web_search
 
+
 def add_trace(state: AgentState, message: str):
     return [*state.get("trace", []), message]
+
 
 def route_question(state: AgentState):
     router = llm().with_structured_output(RouteDecision, method="json_mode")
     decision = router.invoke(f"""
 You route messages for an enterprise IT support assistant.
-Use kb for questions about company IT policies, VPN, password reset, MFA, laptop setup,
-software access, security, email, devices, troubleshooting, or technology support.
-Use direct only for greetings, thanks, or casual chat that needs no company knowledge.
+
+Return "direct" ONLY for pure greetings, thanks, or social chit-chat that
+clearly needs no company knowledge (e.g. "hello", "thanks", "good morning").
+
+Return "kb" for ANYTHING that could touch IT, company policy, accounts,
+devices, software, security, access, email, or troubleshooting — and for any
+factual or how-to request. If you are not sure, choose "kb".
+
+Also return your confidence between 0 and 1 for the chosen route.
+
 Question: {state['question']}
-Return valid JSON like {{"route":"kb"}}.
+Return valid JSON like {{"route":"kb","confidence":0.9}}.
 """)
-    return {"source_used": decision.route, "trace": add_trace(state, f"Router → {decision.route.upper()}")}
+
+    route = decision.route
+    confidence = getattr(decision, "confidence", 1.0)
+    override_reason = ""
+
+    # Safety net 1: a low-confidence "direct" is not allowed to skip grounding.
+    if route == "direct" and confidence < ROUTE_CONFIDENCE_FLOOR:
+        route, override_reason = "kb", "low confidence"
+
+    # Safety net 2: deterministic keyword backstop forces grounding on obvious IT phrasing.
+    if route == "direct" and _looks_like_it_question(state["question"]):
+        route, override_reason = "kb", "IT keywords present"
+
+    note = f"Router → {route.upper()} (conf={confidence:.2f})"
+    if override_reason:
+        note += f" [overrode DIRECT → KB: {override_reason}]"
+
+    return {"source_used": route, "trace": add_trace(state, note)}
+
 
 def route_after_router(state: AgentState) -> Literal["retrieve_kb", "direct_answer"]:
     return "retrieve_kb" if state["source_used"] == "kb" else "direct_answer"
 
+
 def retrieve_kb(state: AgentState):
     docs = get_retriever().invoke(state["current_query"])
     return {"kb_docs": docs, "trace": add_trace(state, f"Private KB retrieval → {len(docs)} chunks")}
+
 
 def grade_kb(state: AgentState):
     grader = llm().with_structured_output(EvidenceGrade, method="json_mode")
@@ -77,8 +123,10 @@ Otherwise return weak. JSON: {{"grade":"good"}} or {{"grade":"weak"}}.
 """)
     return {"kb_grade": grade.grade, "trace": add_trace(state, f"KB evidence grade → {grade.grade.upper()}")}
 
+
 def after_kb(state: AgentState) -> Literal["generate_from_kb", "search_web"]:
     return "generate_from_kb" if state["kb_grade"] == "good" else "search_web"
+
 
 def search_web(state: AgentState):
     result = web_search_tool().invoke({"query": state["current_query"]})
@@ -99,6 +147,7 @@ def search_web(state: AgentState):
         "trace": add_trace(state, "Web fallback → Tavily search"),
     }
 
+
 def grade_web(state: AgentState):
     grader = llm().with_structured_output(EvidenceGrade, method="json_mode")
     grade = grader.invoke(f"""
@@ -109,12 +158,14 @@ Return valid JSON like {{"grade":"good"}}.
 """)
     return {"web_grade": grade.grade, "trace": add_trace(state, f"Web evidence grade → {grade.grade.upper()}")}
 
+
 def after_web(state: AgentState) -> Literal["generate_from_web", "rewrite_query", "insufficient"]:
     if state["web_grade"] == "good":
         return "generate_from_web"
     if state["retry_count"] < settings.max_retries:
         return "rewrite_query"
     return "insufficient"
+
 
 def rewrite_query(state: AgentState):
     rewritten = llm().invoke(f"""
@@ -127,6 +178,7 @@ Question: {state['question']}
         "retry_count": state["retry_count"] + 1,
         "trace": add_trace(state, f"Query rewrite → {rewritten}"),
     }
+
 
 def generate_from_kb(state: AgentState):
     context = "\n\n".join(f"[Source: {d.metadata.get('source','unknown')}]\n{d.page_content}" for d in state["kb_docs"])
@@ -145,6 +197,7 @@ Question: {state['question']}\n\nPrivate KB:\n{context}
             citations.append({"title": src.split("/")[-1], "url": "", "type": "private_kb"})
     return {"answer": answer, "source_used": "private_kb", "citations": citations, "trace": add_trace(state, "Answer generation → PRIVATE KB")}
 
+
 def generate_from_web(state: AgentState):
     answer = llm().invoke(f"""
 You are an enterprise IT support copilot. The private company KB was insufficient.
@@ -153,9 +206,11 @@ Question: {state['question']}\n\nWeb evidence:\n{state['web_results']}
 """).content
     return {"answer": answer, "source_used": "web_search", "trace": add_trace(state, "Answer generation → WEB SEARCH")}
 
+
 def direct_answer(state: AgentState):
     answer = llm().invoke(f"Respond briefly and naturally to: {state['question']}").content
     return {"answer": answer, "source_used": "direct", "trace": add_trace(state, "Direct response → no retrieval")}
+
 
 def insufficient(state: AgentState):
     return {
@@ -163,6 +218,7 @@ def insufficient(state: AgentState):
         "source_used": "insufficient_evidence",
         "trace": add_trace(state, "Stopped → insufficient reliable evidence"),
     }
+
 
 def build_graph():
     graph = StateGraph(AgentState)
@@ -199,7 +255,9 @@ def build_graph():
     graph.add_edge("insufficient", END)
     return graph.compile()
 
+
 agent_graph = build_graph()
+
 
 def ask(question: str):
     initial: AgentState = {
