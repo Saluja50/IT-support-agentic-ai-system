@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Literal
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
@@ -13,22 +14,20 @@ settings = get_settings()
 _llm = None
 _web_search = None
 
+
+
 def llm():
     global _llm
-
     if _llm is None:
-        if not settings.openrouter_api_key:
-            raise RuntimeError("OPENROUTER_API_KEY is missing")
-
+        if not settings.openai_api_key:
+            raise RuntimeError("OPENAI_API_KEY is missing")
         _llm = ChatOpenAI(
-            model=settings.openrouter_model,
+            model=settings.openai_model,
             temperature=0,
-            api_key=settings.openrouter_api_key,
-            base_url="https://openrouter.ai/api/v1",
-        
+            api_key=settings.openai_api_key,
         )
-
     return _llm
+
 
 def web_search_tool():
     global _web_search

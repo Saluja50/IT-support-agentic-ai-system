@@ -11,15 +11,17 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 class Settings(BaseSettings):
     app_name: str = "IT Support Agentic RAG Copilot"
     app_env: str = "development"
-    # openai_api_key: str = ""
-    openrouter_api_key: str = ""
+    openai_api_key: str = ""
+    # openrouter_api_key: str = ""
     tavily_api_key: str = ""
     pinecone_api_key: str = ""
     pinecone_index_name: str = "fde-it-support-rag"
     pinecone_namespace: str = "company-it-kb"
     embedding_model: str = "openai/text-embedding-3-small"
-    # openai_model: str = "gpt-4o-mini"
-    openrouter_model: str = "openrouter/free"
+    openai_model: str = "gpt-4o-mini"
+    # openrouter_model: str = "openrouter/free"
+    # groq_api_key: str = ""
+    # groq_model: str = "openai/gpt-oss-20b"
 
     top_k: int = 4
     max_retries: int = 1
